@@ -49,7 +49,7 @@ def login():
     conn.close()
     if user and check_password_hash(user[2], request.json['password']):
         token = jwt.encode({'user_id': user[0], 'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)}, app.config['SECRET_KEY'])
-        return jsonify({'message': 'Login bem-sucedido', 'token': token}), 200
+        return jsonify({'Logado': True, 'token': token, 'refresh_token': gerar_refresh_token(user[0])}), 200
     else:
         return "Nome de usuário ou senha incorretos", 401
 
@@ -108,6 +108,30 @@ def delete_tarefas(id):
     cursor.execute("DELETE FROM tarefas WHERE id=?", (id,))
     conn.commit()
     conn.close()
+
+def gerar_refresh_token(user_id):
+    refresh_token = jwt.encode({'user_id': user_id, 'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)}, app.config['SECRET_KEY'])
+    return refresh_token
+
+def verificar_refresh_token(token):
+    try:
+        decoded_token = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+        return decoded_token['user_id']
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+    
+def refresh_token():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'message': 'Token não fornecido'}), 401
+    user_id = verificar_refresh_token(token)
+    if user_id:
+        new_token = jwt.encode({'user_id': user_id, 'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)}, app.config['SECRET_KEY'])
+        return jsonify({'token': new_token}), 200
+    else:
+        return jsonify({'message': 'Token inválido ou expirado'}), 401
 
 @app.route('/criar-tarefas', methods=['POST'])
 def handle_criar_tarefas():
@@ -172,6 +196,10 @@ def handle_admin_users():
 def handle_create_table_usuarios():
     create_table_usuarios()
     return "Table created!"
+
+@app.route('/refresh-token', methods=['POST'])
+def handle_refresh_token():
+    return refresh_token()
 
 if __name__ == '__main__':  
     create_table_usuarios()  # Ensure the table is created before the app starts
