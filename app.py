@@ -17,7 +17,8 @@ def create_table_usuarios():
     cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios
                       (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       username TEXT NOT NULL UNIQUE,
-                      password TEXT NOT NULL)''')
+                      password TEXT NOT NULL,
+                        role TEXT NOT NULL DEFAULT 'usuario')''')
 
     conn.commit()
     conn.close()
@@ -48,16 +49,47 @@ def login():
     user = cursor.fetchone()
     conn.close()
     if user and check_password_hash(user[2], request.json['password']):
-        token = jwt.encode({'user_id': user[0], 'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)}, app.config['SECRET_KEY'])
+        user_id = user[0]
+        role = user[3]
+        token_payload ={
+            'user_id': user_id, 
+            'role': role,
+            'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
+        }
+        token = jwt.encode(token_payload, app.config['SECRET_KEY'], algorithm='HS256')
         return jsonify({'Logado': True, 'token': token, 'refresh_token': gerar_refresh_token(user[0])}), 200
     else:
         return "Nome de usuário ou senha incorretos", 401
+
+def role_required(required_role):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            token = request.headers.get('Authorization')
+            if not token:
+                return jsonify({'message': 'Token não fornecido'}), 401
+            try:
+                decoded_token = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+                user_role = decoded_token.get('role')
+                if user_role != required_role:
+                    return jsonify({'message': 'Acesso negado, permissão insucifiente.'}), 403
+            except jwt.ExpiredSignatureError:
+                    return jsonify({'message': 'Token expirado'}), 401
+            except jwt.InvalidTokenError:
+                    return jsonify({'message': 'Token inválido'}), 401
+            
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+                
+
 
 def registro():
     conn = sqlite3.connect('usuarios.db')
     cursor = conn.cursor()
     hashed_password = generate_password_hash (request.json['password'])
-    cursor.execute("INSERT INTO usuarios (username, password) VALUES (?, ?)",(request.json['username'], hashed_password))
+    role = request.json.get('role', 'usuario')
+    cursor.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)",(request.json['username'], hashed_password, role))
     conn.commit()
     conn.close()
     return jsonify({'message': 'Usuário registrado com sucesso'}), 201
@@ -71,7 +103,8 @@ def lookup_user(id):
         user = {
             'id': user[0],
             'username': user[1],
-            'hashed_password': user[2]
+            'hashed_password': user[2],
+            'role': user[3]
         }
     else:
         user = None
@@ -83,13 +116,6 @@ def lookup_tarefasdousuario(id):
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM tarefas WHERE usuario_id=?", (id,))
     tarefas = cursor.fetchall()
-    for tarefa in tarefas:
-        tarefa = {
-            'id': tarefa[0],
-            'tarefa': tarefa[1],
-            'status': tarefa[2],
-            'usuario_id': tarefa[3]
-        }
     conn.close()
     lista_tarefas = [{'id': tarefa[0], 'tarefa': tarefa[1], 'status': tarefa[2], 'usuario_id': tarefa[3]} for tarefa in tarefas]
     tarefasU = {'tarefas': lista_tarefas}
@@ -128,7 +154,20 @@ def refresh_token():
         return jsonify({'message': 'Token não fornecido'}), 401
     user_id = verificar_refresh_token(token)
     if user_id:
-        new_token = jwt.encode({'user_id': user_id, 'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)}, app.config['SECRET_KEY'])
+        conn = sqlite3.connect('usuarios.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM usuarios WHERE id=?", (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        if not user:
+            return jsonify({'message': 'Usuário não encontrado'}), 404
+        
+        role = user[0]
+        new_token = jwt.encode({
+            'user_id': user_id,
+            'role': role,
+            'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=30)
+        }, app.config['SECRET_KEY'], algorithm='HS256')
         return jsonify({'token': new_token}), 200
     else:
         return jsonify({'message': 'Token inválido ou expirado'}), 401
@@ -185,6 +224,7 @@ def handle_editar_tarefas():
     return jsonify({'message': 'Tarefa editada com sucesso'}), 200
 
 @app.route('/admin-users', methods=['GET'])
+@role_required('admin')
 def handle_admin_users():
     user_id = request.args.get('id')
     if not user_id or not user_id.isdigit():
